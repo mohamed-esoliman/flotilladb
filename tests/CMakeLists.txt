@@ -1,3 +1,7 @@
-add_executable(sanity_test sanity_test.cc)
-target_link_libraries(sanity_test GTest::gtest_main)
-gtest_discover_tests(sanity_test)
+function(flotilla_test name)
+  add_executable(${name} ${name}.cc)
+  target_link_libraries(${name} ${ARGN} GTest::gtest_main)
+  gtest_discover_tests(${name})
+endfunction()
+
+flotilla_test(common_test flotilla_common)

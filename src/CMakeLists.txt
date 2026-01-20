@@ -1,1 +1,1 @@
-# subsystem libraries are added as they are built
+add_subdirectory(common)
