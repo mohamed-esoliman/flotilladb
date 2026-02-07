@@ -5,3 +5,6 @@ function(flotilla_test name)
 endfunction()
 
 flotilla_test(common_test flotilla_common)
+flotilla_test(wal_test flotilla_storage)
+flotilla_test(memtable_test flotilla_storage)
+flotilla_test(sstable_test flotilla_storage)
