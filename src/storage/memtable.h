@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <random>
@@ -10,10 +11,10 @@
 
 namespace flotilla::storage {
 
-// Skiplist keyed by (user key asc, seqno desc). Not internally synchronized:
-// the DB serializes writers and guarantees no concurrent write during reads
-// of the same node fields it mutates (writers hold the DB mutex; readers
-// access an immutable snapshot or hold the mutex briefly to pick sources).
+// Skiplist keyed by (user key asc, seqno desc). Writers must be externally
+// serialized (the DB mutex does this); readers are lock-free against a
+// concurrent writer via release/acquire on the next pointers. Nodes are never
+// deleted before the table itself is destroyed.
 class MemTable {
  public:
   MemTable();
@@ -28,8 +29,8 @@ class MemTable {
   // *out (which may be a tombstone).
   bool Get(std::string_view key, Entry* out) const;
 
-  size_t ApproximateBytes() const { return bytes_; }
-  size_t Count() const { return count_; }
+  size_t ApproximateBytes() const { return bytes_.load(std::memory_order_relaxed); }
+  size_t Count() const { return count_.load(std::memory_order_relaxed); }
 
   InternalIterator* NewIterator() const;
 
@@ -45,9 +46,9 @@ class MemTable {
   Node* FindGreaterOrEqual(std::string_view key, uint64_t seqno, Node** prev) const;
 
   Node* head_;
-  int max_height_ = 1;
-  size_t bytes_ = 0;
-  size_t count_ = 0;
+  std::atomic<int> max_height_{1};
+  std::atomic<size_t> bytes_{0};
+  std::atomic<size_t> count_{0};
   std::mt19937 rng_{0x5eed};
 };
 

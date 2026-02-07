@@ -1,25 +1,23 @@
 #include "storage/memtable.h"
 
-#include <cassert>
-
 namespace flotilla::storage {
 
 struct MemTable::Node {
   Entry entry;
   int height;
-  Node* next[1];  // over-allocated to height
+  std::atomic<Node*> next[1];  // over-allocated to height
 };
 
 MemTable::MemTable() {
   Entry head_entry;
   head_ = NewNode(head_entry, kMaxHeight);
-  for (int i = 0; i < kMaxHeight; i++) head_->next[i] = nullptr;
+  for (int i = 0; i < kMaxHeight; i++) head_->next[i].store(nullptr, std::memory_order_relaxed);
 }
 
 MemTable::~MemTable() {
   Node* n = head_;
   while (n != nullptr) {
-    Node* next = n->next[0];
+    Node* next = n->next[0].load(std::memory_order_relaxed);
     n->entry.~Entry();
     ::operator delete(n);
     n = next;
@@ -27,10 +25,14 @@ MemTable::~MemTable() {
 }
 
 MemTable::Node* MemTable::NewNode(const Entry& e, int height) {
-  size_t size = sizeof(Node) + sizeof(Node*) * (static_cast<size_t>(height) - 1);
+  size_t size =
+      sizeof(Node) + sizeof(std::atomic<Node*>) * (static_cast<size_t>(height) - 1);
   Node* n = static_cast<Node*>(::operator new(size));
   new (&n->entry) Entry(e);
   n->height = height;
+  for (int i = 0; i < height; i++) {
+    new (&n->next[i]) std::atomic<Node*>(nullptr);
+  }
   return n;
 }
 
@@ -43,9 +45,9 @@ int MemTable::RandomHeight() {
 MemTable::Node* MemTable::FindGreaterOrEqual(std::string_view key, uint64_t seqno,
                                              Node** prev) const {
   Node* x = head_;
-  int level = max_height_ - 1;
+  int level = max_height_.load(std::memory_order_relaxed) - 1;
   while (true) {
-    Node* next = x->next[level];
+    Node* next = x->next[level].load(std::memory_order_acquire);
     bool advance = next != nullptr &&
                    InternalCompare(next->entry.key, next->entry.seqno, key, seqno) < 0;
     if (advance) {
@@ -70,15 +72,19 @@ void MemTable::Add(uint64_t seqno, Op op, std::string_view key, std::string_view
   FindGreaterOrEqual(key, seqno, prev);
 
   int height = RandomHeight();
-  if (height > max_height_) max_height_ = height;
+  if (height > max_height_.load(std::memory_order_relaxed)) {
+    // New levels dangle off head_ with null next until the node is published.
+    max_height_.store(height, std::memory_order_relaxed);
+  }
 
   Node* n = NewNode(e, height);
   for (int i = 0; i < height; i++) {
-    n->next[i] = prev[i]->next[i];
-    prev[i]->next[i] = n;
+    n->next[i].store(prev[i]->next[i].load(std::memory_order_relaxed),
+                     std::memory_order_relaxed);
+    prev[i]->next[i].store(n, std::memory_order_release);
   }
-  bytes_ += key.size() + value.size() + 32;
-  count_++;
+  bytes_.fetch_add(key.size() + value.size() + 32, std::memory_order_relaxed);
+  count_.fetch_add(1, std::memory_order_relaxed);
 }
 
 bool MemTable::Get(std::string_view key, Entry* out) const {
@@ -94,21 +100,19 @@ class MemTableIterator : public InternalIterator {
   explicit MemTableIterator(const MemTable* mem) : mem_(mem) {}
 
   bool Valid() const override { return node_ != nullptr; }
-  void SeekToFirst() override;
-  void Seek(std::string_view key) override;
-  void Next() override { node_ = node_->next[0]; }
+  void SeekToFirst() override {
+    node_ = mem_->head_->next[0].load(std::memory_order_acquire);
+  }
+  void Seek(std::string_view key) override {
+    node_ = mem_->FindGreaterOrEqual(key, UINT64_MAX, nullptr);
+  }
+  void Next() override { node_ = node_->next[0].load(std::memory_order_acquire); }
   const Entry& entry() const override { return node_->entry; }
 
  private:
   const MemTable* mem_;
   const MemTable::Node* node_ = nullptr;
 };
-
-void MemTableIterator::SeekToFirst() { node_ = mem_->head_->next[0]; }
-
-void MemTableIterator::Seek(std::string_view key) {
-  node_ = mem_->FindGreaterOrEqual(key, UINT64_MAX, nullptr);
-}
 
 InternalIterator* MemTable::NewIterator() const { return new MemTableIterator(this); }
 
