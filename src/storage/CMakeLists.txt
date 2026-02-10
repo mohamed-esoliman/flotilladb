@@ -1,6 +1,9 @@
 add_library(flotilla_storage
   bloom.cc
+  db.cc
+  manifest.cc
   memtable.cc
+  merging_iterator.cc
   sstable.cc
   wal.cc
 )
