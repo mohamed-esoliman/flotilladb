@@ -9,19 +9,19 @@ Checkboxes track progress; commits are finer-grained than milestones.
 Standalone embedded ordered KV library: WAL, skiplist memtable, SSTables with sparse
 index and bloom filters, manifest, leveled compaction, crash recovery.
 
-- [ ] docs/storage.md design doc
-- [ ] common utilities: Status, coding (fixed-width LE), CRC32, logging
-- [ ] WAL: append records with CRC, fsync, tail-truncating recovery scan
-- [ ] skiplist memtable keyed by (key, seqno desc) with tombstones
-- [ ] SSTable writer: data blocks, sparse index, bloom filter, footer
-- [ ] SSTable reader: footer/index/bloom load, point get, iterator
-- [ ] manifest: atomic rewrite tracking live SSTables per level
-- [ ] DB open/recovery: replay WAL into memtable, load manifest
-- [ ] read path: merging iterator memtable -> immutable -> L0 -> Ln
-- [ ] flush: memtable -> L0 SSTable, WAL rotation
-- [ ] leveled compaction on background thread
-- [ ] checkpoint (hard-link/copy live files) for later Raft snapshots
-- [ ] tests: WAL crash points, SSTable roundtrip, bloom stats, compaction, recovery
+- [x] docs/storage.md design doc
+- [x] common utilities: Status, coding (fixed-width LE), CRC32, logging
+- [x] WAL: append records with CRC, fsync, tail-truncating recovery scan
+- [x] skiplist memtable keyed by (key, seqno desc) with tombstones
+- [x] SSTable writer: data blocks, sparse index, bloom filter, footer
+- [x] SSTable reader: footer/index/bloom load, point get, iterator
+- [x] manifest: atomic rewrite tracking live SSTables per level
+- [x] DB open/recovery: replay WAL into memtable, load manifest
+- [x] read path: merging iterator memtable -> immutable -> L0 -> Ln
+- [x] flush: memtable -> L0 SSTable, WAL rotation
+- [x] leveled compaction on background thread
+- [x] checkpoint (hard-link/copy live files) for later Raft snapshots
+- [x] tests: WAL crash points, SSTable roundtrip, bloom stats, compaction, recovery
 
 ## Milestone 2 — Single-node server
 
