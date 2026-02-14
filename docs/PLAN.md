@@ -25,13 +25,13 @@ index and bloom filters, manifest, leveled compaction, crash recovery.
 
 ## Milestone 2 — Single-node server
 
-- [ ] docs/wire-protocol.md design doc
-- [ ] frame codec: length-prefixed binary messages, hand-rolled encode/decode
-- [ ] message types: GET/PUT/DELETE/SCAN/STATUS + error responses with leader hint
-- [ ] TCP server, thread-per-connection; clean shutdown
-- [ ] single-node service applying ops directly to the storage engine
-- [ ] flotilla-cli: REPL, pretty output, GET/PUT/DELETE/SCAN/STATUS
-- [ ] tests: codec roundtrip, server end-to-end over loopback
+- [x] docs/wire-protocol.md design doc
+- [x] frame codec: length-prefixed binary messages, hand-rolled encode/decode
+- [x] message types: GET/PUT/DELETE/SCAN/STATUS + error responses with leader hint
+- [x] TCP server, thread-per-connection; clean shutdown
+- [x] single-node service applying ops directly to the storage engine
+- [x] flotilla-cli: REPL, pretty output, GET/PUT/DELETE/SCAN/STATUS
+- [x] tests: codec roundtrip, server end-to-end over loopback
 
 ## Milestone 3 — Raft
 
