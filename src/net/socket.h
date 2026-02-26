@@ -22,4 +22,8 @@ Status WriteFull(int fd, const void* buf, size_t n);
 
 void CloseSocket(int fd);
 
+// Suppresses SIGPIPE for this socket where supported (macOS); Linux relies on
+// MSG_NOSIGNAL inside WriteFull. Call on every accepted socket.
+void DisableSigpipe(int fd);
+
 }  // namespace flotilla::net

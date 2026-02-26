@@ -18,6 +18,16 @@ Status Errno(const std::string& what) {
 }
 }  // namespace
 
+// A peer closing its end must surface as a write error, never SIGPIPE.
+void DisableSigpipe(int fd) {
+#ifdef SO_NOSIGPIPE
+  int one = 1;
+  ::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+#else
+  (void)fd;
+#endif
+}
+
 Status ParseAddr(const std::string& addr, std::string* host, uint16_t* port) {
   size_t colon = addr.rfind(':');
   if (colon == std::string::npos || colon == 0 || colon + 1 == addr.size()) {
@@ -90,6 +100,7 @@ Status Connect(const std::string& host, uint16_t port, int* fd) {
     if (::connect(s, ai->ai_addr, ai->ai_addrlen) == 0) {
       int one = 1;
       ::setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+      DisableSigpipe(s);
       *fd = s;
       status = Status::OK();
       break;
@@ -127,8 +138,13 @@ Status ReadFull(int fd, void* buf, size_t n) {
 Status WriteFull(int fd, const void* buf, size_t n) {
   const char* p = static_cast<const char*>(buf);
   size_t sent = 0;
+#ifdef MSG_NOSIGNAL
+  constexpr int kFlags = MSG_NOSIGNAL;
+#else
+  constexpr int kFlags = 0;
+#endif
   while (sent < n) {
-    ssize_t r = ::write(fd, p + sent, n - sent);
+    ssize_t r = ::send(fd, p + sent, n - sent, kFlags);
     if (r < 0) {
       if (errno == EINTR) continue;
       return Errno("write");

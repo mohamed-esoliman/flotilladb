@@ -45,6 +45,7 @@ void TcpServer::AcceptLoop() {
       if (stopping_.load()) return;
       continue;
     }
+    DisableSigpipe(fd);
     std::lock_guard<std::mutex> lock(mutex_);
     if (stopping_.load()) {
       ::close(fd);
@@ -61,7 +62,8 @@ void TcpServer::ConnLoop(int fd) {
     if (!ReadFrame(fd, &req).ok()) break;
     resp.clear();
     if (!handler_(req, &resp)) break;
-    if (!WriteFrame(fd, resp).ok()) break;
+    // An empty response means a one-way message (raft traffic): nothing to write.
+    if (!resp.empty() && !WriteFrame(fd, resp).ok()) break;
   }
   {
     std::lock_guard<std::mutex> lock(mutex_);
