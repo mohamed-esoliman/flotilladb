@@ -38,15 +38,15 @@ index and bloom filters, manifest, leveled compaction, crash recovery.
 Deterministic core state machine (tick/step/Ready pattern), simulated transport
 first, then real TCP.
 
-- [ ] docs/raft.md design doc
-- [ ] raft core: elections, log replication, commit rules; no threads, no IO
-- [ ] persistent state: term/vote file (atomic rename), log file with CRC records
-- [ ] deterministic in-process simulation: seeded drops/reorders/delays/partitions
-- [ ] sim tests: election, replication, leader failover, log convergence, restarts
-- [ ] TCP raft transport reusing the frame codec
-- [ ] server integration: propose on leader, apply loop, NOT_LEADER redirects
-- [ ] ReadIndex linearizable reads
-- [ ] tests: 3-node cluster over loopback, kill/restart leader
+- [x] docs/raft.md design doc
+- [x] raft core: elections, log replication, commit rules; no threads, no IO
+- [x] persistent state: term/vote file (atomic rename), log file with CRC records
+- [x] deterministic in-process simulation: seeded drops/reorders/delays/partitions
+- [x] sim tests: election, replication, leader failover, log convergence, restarts
+- [x] TCP raft transport reusing the frame codec
+- [x] server integration: propose on leader, apply loop, NOT_LEADER redirects
+- [x] ReadIndex linearizable reads
+- [x] tests: 3-node cluster over loopback, kill/restart leader
 
 ## Milestone 4 — Chaos harness
 
