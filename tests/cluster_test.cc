@@ -15,7 +15,9 @@ namespace {
 // In-process 3-node cluster over loopback with real TCP transports.
 class TestCluster {
  public:
-  explicit TestCluster(const std::string& name, int n = 3) : dir_(name), n_(n) {
+  explicit TestCluster(const std::string& name, int n = 3,
+                       uint64_t snapshot_interval = 8192)
+      : dir_(name), n_(n), snapshot_interval_(snapshot_interval) {
     // Reserve ephemeral ports by binding listeners, then closing them right
     // before the real servers start.
     std::vector<uint16_t> client_ports(static_cast<size_t>(n)),
@@ -56,6 +58,7 @@ class TestCluster {
     options.db_options.fsync_writes = false;
     options.tick_ms = 5;
     options.request_timeout_ms = 3000;
+    options.snapshot_interval_entries = snapshot_interval_;
     ASSERT_TRUE(RaftNode::Start(options, &nodes_[static_cast<size_t>(id)]).ok());
 
     auto server = std::make_unique<net::TcpServer>();
@@ -105,6 +108,7 @@ class TestCluster {
 
   test::TempDir dir_;
   int n_;
+  uint64_t snapshot_interval_;
   ClusterConfig config_;
   std::vector<std::unique_ptr<RaftNode>> nodes_;
   std::vector<std::unique_ptr<net::TcpServer>> client_servers_;
@@ -199,6 +203,110 @@ TEST(Cluster, RestartedNodeRecoversFromDisk) {
     std::string v;
     ASSERT_TRUE(c.Get("persist5", &v).ok()) << "after bouncing node " << id;
   }
+}
+
+TEST(Cluster, SnapshotCatchesUpDownedFollowerOverTcp) {
+  // Snapshot every 40 applied entries so a downed follower falls behind the
+  // leader's compacted log and must be caught up via InstallSnapshot.
+  TestCluster cluster("cluster_snapshot", 3, 40);
+  int leader = cluster.WaitForLeader();
+  ASSERT_NE(leader, 0);
+
+  int laggard = leader == 1 ? 2 : 1;
+  cluster.StopNode(laggard);
+  ASSERT_NE(cluster.WaitForLeader(10000), 0);
+
+  client::Client c(cluster.ClientAddrs());
+  for (int i = 0; i < 150; i++) {
+    ASSERT_TRUE(c.Put("snap" + std::to_string(i), "v" + std::to_string(i)).ok()) << i;
+  }
+
+  cluster.StartNode(laggard);
+
+  // The laggard must reach the current applied index; poll its own status.
+  client::Client lc({cluster.config_.nodes[static_cast<size_t>(laggard - 1)].client_addr});
+  uint64_t snapshot_index = 0;
+  bool caught_up = false;
+  for (int waited = 0; waited < 15000 && !caught_up; waited += 200) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::vector<std::pair<std::string, std::string>> fields;
+    net::Request req;
+    req.type = net::MsgType::kStatus;
+    net::Response resp;
+    if (!lc.Call(req, &resp).ok()) continue;
+    uint64_t applied = 0;
+    for (const auto& [k, v] : resp.kvs) {
+      if (k == "applied_index") applied = strtoull(v.c_str(), nullptr, 10);
+      if (k == "snapshot_index") snapshot_index = strtoull(v.c_str(), nullptr, 10);
+    }
+    caught_up = applied >= 150 && snapshot_index > 0;
+  }
+  EXPECT_TRUE(caught_up);
+  EXPECT_GT(snapshot_index, 0u) << "follower should have installed a snapshot";
+
+  // And its data is correct: read via the cluster after killing another node
+  // so the laggard's vote/data must participate.
+  std::string v;
+  ASSERT_TRUE(c.Get("snap149", &v).ok());
+  EXPECT_EQ(v, "v149");
+  int other = 6 - leader - laggard;
+  cluster.StopNode(other);
+  ASSERT_NE(cluster.WaitForLeader(10000), 0);
+  ASSERT_TRUE(c.Get("snap75", &v).ok());
+  EXPECT_EQ(v, "v75");
+  ASSERT_TRUE(c.Put("post-snap", "ok").ok());
+}
+
+TEST(Cluster, SustainedLoadWithTinyBuffersAndSnapshots) {
+  // Small write buffers force constant flush/compaction while snapshots
+  // compact the raft log: the milestone 5 hardening scenario.
+  TestCluster cluster("cluster_sustained", 3, 100);
+  for (int i = 1; i <= 3; i++) {
+    // Rebuild nodes with aggressive storage options.
+    cluster.StopNode(i);
+  }
+  for (int i = 1; i <= 3; i++) {
+    RaftNode::NodeOptions options;
+    options.data_dir = cluster.dir_.file("node" + std::to_string(i));
+    options.id = static_cast<raft::NodeId>(i);
+    options.cluster = cluster.config_;
+    options.db_options.fsync_writes = false;
+    options.db_options.write_buffer_size = 4096;
+    options.db_options.l0_compaction_trigger = 4;
+    options.db_options.level_base_bytes = 16 << 10;
+    options.tick_ms = 5;
+    options.request_timeout_ms = 3000;
+    options.snapshot_interval_entries = 100;
+    ASSERT_TRUE(RaftNode::Start(options, &cluster.nodes_[static_cast<size_t>(i)]).ok());
+    auto server = std::make_unique<net::TcpServer>();
+    std::string host;
+    uint16_t port;
+    ASSERT_TRUE(net::ParseAddr(cluster.config_.nodes[static_cast<size_t>(i - 1)].client_addr,
+                               &host, &port)
+                    .ok());
+    RaftNode* node = cluster.nodes_[static_cast<size_t>(i)].get();
+    ASSERT_TRUE(server
+                    ->Start(host, port,
+                            [node](std::string_view req, std::string* resp) {
+                              return node->HandleClientFrame(req, resp);
+                            })
+                    .ok());
+    cluster.client_servers_[static_cast<size_t>(i)] = std::move(server);
+  }
+  ASSERT_NE(cluster.WaitForLeader(), 0);
+
+  client::Client c(cluster.ClientAddrs());
+  std::string big(300, 'x');
+  for (int i = 0; i < 500; i++) {
+    ASSERT_TRUE(c.Put("load" + std::to_string(i % 50), big + std::to_string(i)).ok())
+        << i;
+  }
+  std::string v;
+  ASSERT_TRUE(c.Get("load49", &v).ok());
+  EXPECT_EQ(v, big + "499");
+  std::vector<std::pair<std::string, std::string>> rows;
+  ASSERT_TRUE(c.Scan("", "", 0, &rows).ok());
+  EXPECT_EQ(rows.size(), 50u);
 }
 
 TEST(Cluster, ConcurrentClientsSequentialKeys) {
