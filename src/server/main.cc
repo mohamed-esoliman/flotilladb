@@ -59,10 +59,11 @@ int RunStandalone(const std::string& data_dir, const std::string& listen_addr) {
 }
 
 int RunCluster(const std::string& config_path, flotilla::raft::NodeId node_id,
-               const std::string& data_dir) {
+               const std::string& data_dir, uint64_t snapshot_interval) {
   flotilla::server::RaftNode::NodeOptions options;
   options.data_dir = data_dir;
   options.id = node_id;
+  if (snapshot_interval > 0) options.snapshot_interval_entries = snapshot_interval;
   if (auto s = flotilla::server::LoadClusterConfig(config_path, &options.cluster);
       !s.ok()) {
     fprintf(stderr, "load config: %s\n", s.ToString().c_str());
@@ -112,6 +113,7 @@ int main(int argc, char** argv) {
   std::string listen_addr;
   std::string config_path;
   long node_id = 0;
+  long snapshot_interval = 0;
   for (int i = 1; i < argc; i++) {
     std::string arg = argv[i];
     if (arg == "--data-dir" && i + 1 < argc) {
@@ -122,6 +124,8 @@ int main(int argc, char** argv) {
       config_path = argv[++i];
     } else if (arg == "--node-id" && i + 1 < argc) {
       node_id = atol(argv[++i]);
+    } else if (arg == "--snapshot-interval" && i + 1 < argc) {
+      snapshot_interval = atol(argv[++i]);
     } else if (arg == "--verbose") {
       flotilla::Logger::MinLevel() = flotilla::LogLevel::kDebug;
     } else {
@@ -144,7 +148,7 @@ int main(int argc, char** argv) {
       return 2;
     }
     return RunCluster(config_path, static_cast<flotilla::raft::NodeId>(node_id),
-                      data_dir);
+                      data_dir, static_cast<uint64_t>(snapshot_interval));
   }
   if (listen_addr.empty()) listen_addr = "127.0.0.1:4001";
   return RunStandalone(data_dir, listen_addr);

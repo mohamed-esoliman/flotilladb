@@ -26,7 +26,8 @@ from proxy import LinkProxy  # noqa: E402
 
 
 class Cluster:
-    def __init__(self, binary, workdir, nodes, port_base, log):
+    def __init__(self, binary, workdir, nodes, port_base, log, snapshot_interval=0):
+        self.snapshot_interval = snapshot_interval
         self.binary = binary
         self.workdir = workdir
         self.n = nodes
@@ -68,10 +69,11 @@ class Cluster:
         conf = os.path.join(self.workdir, f"cluster-{node_id}.conf")
         data = os.path.join(self.workdir, f"node{node_id}")
         logfile = open(os.path.join(self.workdir, f"node{node_id}.log"), "a")
-        self.procs[node_id] = subprocess.Popen(
-            [self.binary, "--config", conf, "--node-id", str(node_id),
-             "--data-dir", data],
-            stdout=logfile, stderr=logfile)
+        cmd = [self.binary, "--config", conf, "--node-id", str(node_id),
+               "--data-dir", data]
+        if self.snapshot_interval:
+            cmd += ["--snapshot-interval", str(self.snapshot_interval)]
+        self.procs[node_id] = subprocess.Popen(cmd, stdout=logfile, stderr=logfile)
         self.log(f"node {node_id} started pid {self.procs[node_id].pid}")
 
     def kill_node(self, node_id):
@@ -239,6 +241,8 @@ def main():
     parser.add_argument("--port-base", type=int, default=16000)
     parser.add_argument("--binary", default=None)
     parser.add_argument("--workdir", default=None)
+    parser.add_argument("--snapshot-interval", type=int, default=300,
+                        help="raft log entries between snapshots (0 = server default)")
     parser.add_argument("--no-faults", action="store_true")
     args = parser.parse_args()
 
@@ -258,7 +262,8 @@ def main():
         f"workdir={workdir}")
 
     logger = history_mod.HistoryLogger(os.path.join(workdir, "history.jsonl"))
-    cluster = Cluster(binary, workdir, args.nodes, args.port_base, log)
+    cluster = Cluster(binary, workdir, args.nodes, args.port_base, log,
+                      snapshot_interval=args.snapshot_interval)
     exit_code = 1
     try:
         for i in range(1, args.nodes + 1):
