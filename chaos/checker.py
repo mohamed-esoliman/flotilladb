@@ -36,6 +36,13 @@ def build_ops(raw_ops):
     """
     observed_values = {rec.get("result") for rec in raw_ops
                        if rec["op"] == "get" and rec.get("outcome") in ("ok", "notfound")}
+    # Latest completion time of a determinate read that observed "not found":
+    # only such reads can ever witness a delete's effect.
+    last_none_read = max(
+        (rec["returned"] for rec in raw_ops
+         if rec["op"] == "get" and rec.get("outcome") in ("ok", "notfound")
+         and rec.get("result") is None),
+        default=-1.0)
     ops = []
     for rec in raw_ops:
         outcome = rec.get("outcome", "timeout")
@@ -44,6 +51,11 @@ def build_ops(raw_ops):
         if kind == "get" and not determinate:
             continue  # a read that observed nothing constrains nothing
         if kind == "put" and not determinate and rec.get("value") not in observed_values:
+            continue
+        if kind == "del" and not determinate and rec["invoked"] > last_none_read:
+            # No read that could follow this delete ever observed "not found",
+            # so its effect is unobserved and it can be discarded like an
+            # unobserved indeterminate put.
             continue
         observed = None
         if kind == "get":
@@ -79,11 +91,35 @@ def check_key(raw_ops, initial=None, max_states=5_000_000):
     visited = set()
     states = 0
 
+    def consume_matching_reads(done, value):
+        # Put values are unique, so once the register moves off `value` it can
+        # never return; an enabled read observing `value` can therefore always
+        # be linearized immediately (exchange argument). This removes all
+        # branching over reads.
+        changed = True
+        while changed:
+            changed = False
+            min_ret = INF
+            for i, op in enumerate(ops):
+                if not done & (1 << i) and op.ret < min_ret:
+                    min_ret = op.ret
+            for i, op in enumerate(ops):
+                if done & (1 << i):
+                    continue
+                if op.inv > min_ret:
+                    break
+                if op.kind == "get" and op.observed == value:
+                    done |= 1 << i
+                    changed = True
+                    break
+        return done
+
     # Iterative DFS: stack of (done_mask, value).
     all_done = (1 << n) - 1
     stack = [(0, initial)]
     while stack:
         done, value = stack.pop()
+        done = consume_matching_reads(done, value)
         if done == all_done:
             return CheckResult(True, "linearizable", states)
         key = (done, value)
@@ -106,16 +142,14 @@ def check_key(raw_ops, initial=None, max_states=5_000_000):
                 continue
             if op.inv > min_ret:
                 break  # ops are inv-sorted; nothing later can be next
-            new_done = done | (1 << i)
             if op.kind == "get":
-                if op.observed == value:
-                    stack.append((new_done, value))
-            else:
-                effect = op.value if op.kind == "put" else None
-                stack.append((new_done, effect))
-                if not op.determinate:
-                    # May never have taken effect.
-                    stack.append((new_done, value))
+                continue  # non-matching reads can never go next; matching ones are consumed
+            new_done = done | (1 << i)
+            effect = op.value if op.kind == "put" else None
+            stack.append((new_done, effect))
+            if not op.determinate:
+                # May never have taken effect.
+                stack.append((new_done, value))
     return CheckResult(False, "no valid linearization", states)
 
 
