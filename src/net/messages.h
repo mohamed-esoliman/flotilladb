@@ -15,6 +15,8 @@ enum class MsgType : uint8_t {
   kDelete = 3,
   kScan = 4,
   kStatus = 5,
+  kSplit = 6,   // admin: split the range containing key at key
+  kRanges = 7,  // list range descriptors (this node's view)
   kResponse = 16,
   kRaft = 32,
 };
@@ -25,7 +27,10 @@ struct Request {
   std::string value;    // PUT
   std::string end_key;  // SCAN, exclusive, empty = unbounded
   uint32_t limit = 0;   // SCAN, 0 = server default
+  uint8_t flags = 0;    // bit 0: kNoForward (single-range sub-scan)
 };
+
+inline constexpr uint8_t kRequestNoForward = 1;
 
 struct Response {
   uint8_t code = 0;  // 0 = OK, else mirrors Status::Code

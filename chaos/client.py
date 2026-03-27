@@ -28,9 +28,9 @@ def _lp(data: bytes) -> bytes:
 
 
 def encode_request(msg_type: int, key: bytes = b"", value: bytes = b"",
-                   end_key: bytes = b"", limit: int = 0) -> bytes:
+                   end_key: bytes = b"", limit: int = 0, flags: int = 0) -> bytes:
     return (struct.pack("<B", msg_type) + _lp(key) + _lp(value) + _lp(end_key) +
-            struct.pack("<I", limit))
+            struct.pack("<IB", limit, flags))
 
 
 class _Reader:

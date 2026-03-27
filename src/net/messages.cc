@@ -34,6 +34,7 @@ std::string EncodeRequest(const Request& req) {
   PutLengthPrefixed(&out, req.value);
   PutLengthPrefixed(&out, req.end_key);
   PutFixed32(&out, req.limit);
+  PutFixed8(&out, req.flags);
   return out;
 }
 
@@ -46,6 +47,8 @@ bool DecodeRequest(std::string_view payload, Request* req) {
     case MsgType::kDelete:
     case MsgType::kScan:
     case MsgType::kStatus:
+    case MsgType::kSplit:
+    case MsgType::kRanges:
       break;
     default:
       return false;
@@ -55,6 +58,7 @@ bool DecodeRequest(std::string_view payload, Request* req) {
   req->value = dec.Str();
   req->end_key = dec.Str();
   req->limit = dec.U32();
+  req->flags = dec.U8();
   return dec.ok() && dec.remaining() == 0;
 }
 
