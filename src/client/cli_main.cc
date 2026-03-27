@@ -64,6 +64,8 @@ void Help() {
       "  del <key>                  delete a key\n"
       "  scan [start] [end] [n]     range scan, end exclusive, n row limit\n"
       "  status                     node status\n"
+      "  split <key>                split the range containing key at key\n"
+      "  ranges                     list range descriptors\n"
       "  help                       this help\n"
       "  quit                       exit\n"
       "quote values containing spaces: put greeting \"hello world\"\n");
@@ -113,6 +115,15 @@ int RunCommand(Client& client, const std::vector<std::string>& tokens) {
     Status s = client.GetStatus(&fields);
     if (!s.ok()) return report(s);
     PrintTable(fields, "field", "value");
+  } else if (cmd == "split" && tokens.size() == 2) {
+    Status s = client.Split(tokens[1]);
+    if (!s.ok()) return report(s);
+    printf("OK\n");
+  } else if (cmd == "ranges" && tokens.size() == 1) {
+    std::vector<std::pair<std::string, std::string>> ranges;
+    Status s = client.Ranges(&ranges);
+    if (!s.ok()) return report(s);
+    PrintTable(ranges, "range", "bounds");
   } else if (cmd == "help") {
     Help();
   } else {

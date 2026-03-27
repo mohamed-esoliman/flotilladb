@@ -141,6 +141,27 @@ Status Client::Scan(const std::string& start, const std::string& end, uint32_t l
   return Status::OK();
 }
 
+Status Client::Split(const std::string& key) {
+  Request req;
+  req.type = MsgType::kSplit;
+  req.key = key;
+  Response resp;
+  Status s = Call(req, &resp);
+  if (!s.ok()) return s;
+  return resp.ToStatus();
+}
+
+Status Client::Ranges(std::vector<std::pair<std::string, std::string>>* ranges) {
+  Request req;
+  req.type = MsgType::kRanges;
+  Response resp;
+  Status s = Call(req, &resp);
+  if (!s.ok()) return s;
+  if (!resp.ok()) return resp.ToStatus();
+  *ranges = std::move(resp.kvs);
+  return Status::OK();
+}
+
 Status Client::GetStatus(std::vector<std::pair<std::string, std::string>>* fields) {
   Request req;
   req.type = MsgType::kStatus;

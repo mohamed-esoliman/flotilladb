@@ -25,6 +25,8 @@ class Client {
   Status Scan(const std::string& start, const std::string& end, uint32_t limit,
               std::vector<std::pair<std::string, std::string>>* rows);
   Status GetStatus(std::vector<std::pair<std::string, std::string>>* fields);
+  Status Split(const std::string& key);
+  Status Ranges(std::vector<std::pair<std::string, std::string>>* ranges);
 
   // Last address a successful call went to.
   const std::string& current_addr() const { return current_addr_; }
