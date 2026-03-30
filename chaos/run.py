@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import checker  # noqa: E402
 import history as history_mod  # noqa: E402
-from client import Client, WireError  # noqa: E402
+from client import Client, WireError, encode_request  # noqa: E402
 from proxy import LinkProxy  # noqa: E402
 
 
@@ -241,6 +241,8 @@ def main():
     parser.add_argument("--port-base", type=int, default=16000)
     parser.add_argument("--binary", default=None)
     parser.add_argument("--workdir", default=None)
+    parser.add_argument("--splits", default="",
+                        help="comma-separated keys to split at after startup")
     parser.add_argument("--snapshot-interval", type=int, default=300,
                         help="raft log entries between snapshots (0 = server default)")
     parser.add_argument("--no-faults", action="store_true")
@@ -269,6 +271,14 @@ def main():
         for i in range(1, args.nodes + 1):
             cluster.start_node(i)
         time.sleep(2.0)
+
+        if args.splits:
+            split_client = Client(list(cluster.client_addr.values()), timeout=3.0,
+                                  max_attempts=10)
+            for split_key in args.splits.split(","):
+                split_client._call(encode_request(6, key=split_key.encode()))
+                log(f"split at {split_key}")
+            split_client.close()
 
         stop_event = threading.Event()
         workers = [Workload(w, cluster, logger, stop_event,
