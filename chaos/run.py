@@ -276,7 +276,16 @@ def main():
             split_client = Client(list(cluster.client_addr.values()), timeout=3.0,
                                   max_attempts=10)
             for split_key in args.splits.split(","):
-                split_client._call(encode_request(6, key=split_key.encode()))
+                # A fresh child group needs an election before it can split
+                # again; retry while that settles.
+                for attempt in range(20):
+                    try:
+                        split_client._call(encode_request(6, key=split_key.encode()))
+                        break
+                    except (OSError, WireError):
+                        time.sleep(0.5)
+                else:
+                    raise RuntimeError(f"split at {split_key} never succeeded")
                 log(f"split at {split_key}")
             split_client.close()
 

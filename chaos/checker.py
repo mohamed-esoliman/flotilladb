@@ -137,6 +137,7 @@ def check_key(raw_ops, initial=None, max_states=5_000_000):
             if op.ret < min_ret:
                 min_ret = op.ret
 
+        branched_indet_del = False
         for i, op in enumerate(ops):
             if done & (1 << i):
                 continue
@@ -144,6 +145,13 @@ def check_key(raw_ops, initial=None, max_states=5_000_000):
                 break  # ops are inv-sorted; nothing later can be next
             if op.kind == "get":
                 continue  # non-matching reads can never go next; matching ones are consumed
+            if op.kind == "del" and not op.determinate:
+                # All pending indeterminate deletes have the same effect and
+                # unbounded windows, so any linearization can be reordered to
+                # handle them in invocation order: branch only on the earliest.
+                if branched_indet_del:
+                    continue
+                branched_indet_del = True
             new_done = done | (1 << i)
             effect = op.value if op.kind == "put" else None
             stack.append((new_done, effect))
