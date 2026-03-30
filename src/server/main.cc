@@ -10,7 +10,7 @@
 #include "net/tcp_server.h"
 #include "server/cluster_config.h"
 #include "server/kv_service.h"
-#include "server/raft_node.h"
+#include "server/sharded_node.h"
 #include "storage/db.h"
 
 namespace {
@@ -60,7 +60,7 @@ int RunStandalone(const std::string& data_dir, const std::string& listen_addr) {
 
 int RunCluster(const std::string& config_path, flotilla::raft::NodeId node_id,
                const std::string& data_dir, uint64_t snapshot_interval) {
-  flotilla::server::RaftNode::NodeOptions options;
+  flotilla::server::ShardedNode::NodeOptions options;
   options.data_dir = data_dir;
   options.id = node_id;
   if (snapshot_interval > 0) options.snapshot_interval_entries = snapshot_interval;
@@ -75,8 +75,8 @@ int RunCluster(const std::string& config_path, flotilla::raft::NodeId node_id,
     return 2;
   }
 
-  std::unique_ptr<flotilla::server::RaftNode> node;
-  if (auto s = flotilla::server::RaftNode::Start(options, &node); !s.ok()) {
+  std::unique_ptr<flotilla::server::ShardedNode> node;
+  if (auto s = flotilla::server::ShardedNode::Start(options, &node); !s.ok()) {
     fprintf(stderr, "start raft node: %s\n", s.ToString().c_str());
     return 1;
   }

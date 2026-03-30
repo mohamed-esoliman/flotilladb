@@ -6,7 +6,7 @@
 #include "client/client.h"
 #include "net/socket.h"
 #include "net/tcp_server.h"
-#include "server/raft_node.h"
+#include "server/sharded_node.h"
 #include "testutil.h"
 
 namespace flotilla::server {
@@ -51,7 +51,7 @@ class TestCluster {
   }
 
   void StartNode(int id) {
-    RaftNode::NodeOptions options;
+    ShardedNode::NodeOptions options;
     options.data_dir = dir_.file("node" + std::to_string(id));
     options.id = static_cast<raft::NodeId>(id);
     options.cluster = config_;
@@ -59,7 +59,7 @@ class TestCluster {
     options.tick_ms = 5;
     options.request_timeout_ms = 3000;
     options.snapshot_interval_entries = snapshot_interval_;
-    ASSERT_TRUE(RaftNode::Start(options, &nodes_[static_cast<size_t>(id)]).ok());
+    ASSERT_TRUE(ShardedNode::Start(options, &nodes_[static_cast<size_t>(id)]).ok());
 
     auto server = std::make_unique<net::TcpServer>();
     std::string host;
@@ -67,7 +67,7 @@ class TestCluster {
     ASSERT_TRUE(net::ParseAddr(config_.nodes[static_cast<size_t>(id - 1)].client_addr,
                                &host, &port)
                     .ok());
-    RaftNode* node = nodes_[static_cast<size_t>(id)].get();
+    ShardedNode* node = nodes_[static_cast<size_t>(id)].get();
     ASSERT_TRUE(server
                     ->Start(host, port,
                             [node](std::string_view req, std::string* resp) {
@@ -110,7 +110,7 @@ class TestCluster {
   int n_;
   uint64_t snapshot_interval_;
   ClusterConfig config_;
-  std::vector<std::unique_ptr<RaftNode>> nodes_;
+  std::vector<std::unique_ptr<ShardedNode>> nodes_;
   std::vector<std::unique_ptr<net::TcpServer>> client_servers_;
 };
 
@@ -266,7 +266,7 @@ TEST(Cluster, SustainedLoadWithTinyBuffersAndSnapshots) {
     cluster.StopNode(i);
   }
   for (int i = 1; i <= 3; i++) {
-    RaftNode::NodeOptions options;
+    ShardedNode::NodeOptions options;
     options.data_dir = cluster.dir_.file("node" + std::to_string(i));
     options.id = static_cast<raft::NodeId>(i);
     options.cluster = cluster.config_;
@@ -277,14 +277,14 @@ TEST(Cluster, SustainedLoadWithTinyBuffersAndSnapshots) {
     options.tick_ms = 5;
     options.request_timeout_ms = 3000;
     options.snapshot_interval_entries = 100;
-    ASSERT_TRUE(RaftNode::Start(options, &cluster.nodes_[static_cast<size_t>(i)]).ok());
+    ASSERT_TRUE(ShardedNode::Start(options, &cluster.nodes_[static_cast<size_t>(i)]).ok());
     auto server = std::make_unique<net::TcpServer>();
     std::string host;
     uint16_t port;
     ASSERT_TRUE(net::ParseAddr(cluster.config_.nodes[static_cast<size_t>(i - 1)].client_addr,
                                &host, &port)
                     .ok());
-    RaftNode* node = cluster.nodes_[static_cast<size_t>(i)].get();
+    ShardedNode* node = cluster.nodes_[static_cast<size_t>(i)].get();
     ASSERT_TRUE(server
                     ->Start(host, port,
                             [node](std::string_view req, std::string* resp) {

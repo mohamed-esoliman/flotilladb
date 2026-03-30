@@ -13,6 +13,7 @@ flotilla_test(net_test flotilla_server flotilla_client)
 flotilla_test(raft_storage_test flotilla_raft)
 flotilla_test(raft_sim_test flotilla_raft)
 flotilla_test(cluster_test flotilla_server flotilla_client)
+flotilla_test(shard_test flotilla_server flotilla_client)
 
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_FOUND)
