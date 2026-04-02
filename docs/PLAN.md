@@ -50,30 +50,30 @@ first, then real TCP.
 
 ## Milestone 4 — Chaos harness
 
-- [ ] docs/chaos.md design doc
-- [ ] chaos/proxy.py: per-link TCP proxies with drop/delay control
-- [ ] chaos/client.py: Python wire-protocol client
-- [ ] chaos/run.py: seeded fault schedule (kill/restart/partition/heal/delay),
+- [x] docs/chaos.md design doc
+- [x] chaos/proxy.py: per-link TCP proxies with drop/delay control
+- [x] chaos/client.py: Python wire-protocol client
+- [x] chaos/run.py: seeded fault schedule (kill/restart/partition/heal/delay),
       concurrent workloads, full invocation/response history log
-- [ ] chaos/checker.py: single-key linearizability checker (Wing-Gong style)
-- [ ] checker unit tests with known-good and known-bad histories
-- [ ] run repeatedly, fix every bug it finds
+- [x] chaos/checker.py: single-key linearizability checker (Wing-Gong style)
+- [x] checker unit tests with known-good and known-bad histories
+- [x] run repeatedly, fix every bug it finds
 
 ## Milestone 5 — Snapshots + compaction hardening (resume-ready)
 
-- [ ] snapshot: storage checkpoint + last included index/term, log truncation
-- [ ] InstallSnapshot RPC for lagging followers
-- [ ] compaction under load hardening, backpressure
-- [ ] chaos runs with snapshots enabled
-- [ ] reconcile docs
+- [x] snapshot: storage checkpoint + last included index/term, log truncation
+- [x] InstallSnapshot RPC for lagging followers
+- [x] compaction under load hardening, backpressure
+- [x] chaos runs with snapshots enabled
+- [x] reconcile docs
 
 ## Milestone 6 — Multi-Raft sharding
 
-- [ ] docs/sharding.md design doc
-- [ ] range descriptors in a meta group; multiple raft groups per node
-- [ ] routing: client fetches/caches range table, WRONG_RANGE retry
-- [ ] manual shard split command
-- [ ] tests + chaos across shards
+- [x] docs/sharding.md design doc
+- [x] range descriptors in a meta group; multiple raft groups per node
+- [x] routing: client fetches/caches range table, WRONG_RANGE retry
+- [x] manual shard split command
+- [x] tests + chaos across shards
 
 ## Milestone 7 — MVCC transactions
 
