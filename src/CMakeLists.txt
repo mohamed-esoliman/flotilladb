@@ -1,6 +1,7 @@
 add_subdirectory(common)
 add_subdirectory(storage)
 add_subdirectory(raft)
+add_subdirectory(txn)
 add_subdirectory(net)
 add_subdirectory(server)
 add_subdirectory(client)
