@@ -77,6 +77,14 @@ class RaftGroup {
   // Proposes splitting this group's range at key, creating child_id.
   Status Split(std::string_view key, uint32_t child_id);
 
+  // Transactional commands (Percolator state machine, ops 4-7). Logical
+  // outcomes (Conflict/Aborted) come back as the returned status.
+  Status TsTick(uint64_t* ts);
+  Status TxnPrewrite(std::string_view key, std::string_view value, uint8_t wop,
+                     uint64_t start_ts, std::string_view primary, uint64_t wall_ms);
+  Status TxnCommit(std::string_view key, uint64_t start_ts, uint64_t commit_ts);
+  Status TxnRollback(std::string_view key, uint64_t start_ts);
+
   uint32_t id() const { return options_.group_id; }
   RangeDesc range();  // current applied range
   bool IsLeader();
@@ -96,9 +104,10 @@ class RaftGroup {
       : options_(std::move(options)), db_(db), host_(host) {}
 
   Status Init();
-  Status ProposeAndWait(const std::string& command);
+  Status ProposeAndWait(const std::string& command, uint64_t* applied_index = nullptr);
   void ApplyLoop();
   void DrainReady();  // requires raft_mutex_
+  // Returns the command's logical outcome; Corruption/IOError are fatal.
   Status ApplyCommand(const raft::LogEntry& e);
   Status ApplySplit(uint32_t child_id, const std::string& split_key);
   void ApplySnapshot(const raft::Snapshot& snap);
@@ -153,6 +162,11 @@ std::string EncodeRangeDesc(const RangeDesc& d);
 bool DecodeRangeDesc(uint32_t id, std::string_view data, RangeDesc* out);
 inline bool IsSystemKey(std::string_view key) {
   return !key.empty() && key[0] == '\0';
+}
+// Raw client keys may not collide with system keys or the transactional
+// keyspace ('!' prefixed).
+inline bool IsReservedKey(std::string_view key) {
+  return !key.empty() && (key[0] == '\0' || key[0] == '!');
 }
 
 }  // namespace flotilla::server

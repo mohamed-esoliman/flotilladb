@@ -1,11 +1,13 @@
 #include "server/raft_group.h"
 
 #include <chrono>
+#include <functional>
 #include <random>
 
 #include "common/coding.h"
 #include "common/logger.h"
 #include "raft/wire.h"
+#include "txn/txn_ops.h"
 
 namespace flotilla::server {
 
@@ -72,7 +74,46 @@ bool DecodeCommand(std::string_view cmd, uint8_t* op, std::string* key,
   *op = dec.U8();
   *key = dec.Str();
   *value = dec.Str();
-  return dec.ok() && dec.remaining() == 0 && *op >= 1 && *op <= 3;
+  return dec.ok() && dec.remaining() == 0 && *op >= 1 && *op <= 7;
+}
+
+bool IsFatalApplyError(const Status& s) {
+  return s.IsCorruption() || s.code() == Status::Code::kIOError;
+}
+
+// Enumerates every storage pair owned by a user-key range: raw KV entries in
+// [start, end) plus the transactional lock/write/data records whose user key
+// falls in [start, end). System keys are per-group state, never included.
+void ForEachOwnedPair(storage::DB* db, const RangeDesc& range,
+                      const std::function<void(std::string_view, std::string_view)>& fn) {
+  {
+    auto it = db->NewIterator();
+    if (range.start.empty()) {
+      it->SeekToFirst();
+    } else {
+      it->Seek(range.start);
+    }
+    for (; it->Valid(); it->Next()) {
+      std::string_view key = it->key();
+      if (!range.end.empty() && key >= range.end) break;
+      if (IsReservedKey(key) || IsSystemKey(key)) continue;
+      fn(key, it->value());
+    }
+  }
+  for (const char* prefix : {txn::kLockPrefix, txn::kWritePrefix, txn::kDataPrefix}) {
+    std::string seek = prefix + txn::EscapeKey(range.start);
+    seek.resize(seek.size() - 2);  // drop terminator: first user key >= start
+    auto it = db->NewIterator();
+    for (it->Seek(seek); it->Valid(); it->Next()) {
+      std::string_view key = it->key();
+      if (key.substr(0, 2) != prefix) break;
+      std::string user_key;
+      size_t consumed = 0;
+      if (!txn::UnescapeKey(key.substr(2), &user_key, &consumed)) break;
+      if (!range.end.empty() && user_key >= range.end) break;
+      fn(key, it->value());
+    }
+  }
 }
 
 }  // namespace
@@ -278,6 +319,36 @@ Status RaftGroup::ApplyCommand(const LogEntry& e) {
       if (!dec.ok()) return Status::Corruption("bad split payload");
       return ApplySplit(child_id, key);
     }
+    case 4: {
+      Decoder dec(value);
+      uint8_t wop = dec.U8();
+      uint64_t start_ts = dec.U64();
+      uint64_t wall_ms = dec.U64();
+      std::string primary = dec.Str();
+      std::string txn_value = dec.Str();
+      if (!dec.ok() || dec.remaining() != 0 || (wop != 1 && wop != 2)) {
+        return Status::Corruption("bad prewrite payload");
+      }
+      return txn::ApplyPrewrite(db_, key, txn_value, wop, start_ts, primary, wall_ms);
+    }
+    case 5: {
+      Decoder dec(value);
+      uint64_t start_ts = dec.U64();
+      uint64_t commit_ts = dec.U64();
+      if (!dec.ok() || dec.remaining() != 0) {
+        return Status::Corruption("bad commit payload");
+      }
+      return txn::ApplyCommit(db_, key, start_ts, commit_ts);
+    }
+    case 6: {
+      Decoder dec(value);
+      uint64_t start_ts = dec.U64();
+      if (!dec.ok() || dec.remaining() != 0) {
+        return Status::Corruption("bad rollback payload");
+      }
+      return txn::ApplyRollback(db_, key, start_ts);
+    }
+    case 7: return Status::OK();  // ts tick: the entry's index is the payload
   }
   return Status::Corruption("unknown op");
 }
@@ -312,9 +383,12 @@ void RaftGroup::ApplyLoop() {
         std::lock_guard<std::mutex> lock(apply_mutex_);
         if (e.index <= applied_index_) continue;
       }
-      Status s = ApplyCommand(e);
-      if (s.ok()) s = PersistAppliedMarker(e.index);
-      if (!s.ok()) {
+      // Logical outcomes (Conflict/Aborted from txn ops) are results for the
+      // proposer; only infrastructure failures stop the apply loop.
+      Status logical = ApplyCommand(e);
+      Status s = logical;
+      if (!IsFatalApplyError(s)) s = PersistAppliedMarker(e.index);
+      if (IsFatalApplyError(s)) {
         FLOG_ERROR("group %u apply failed at %llu: %s", options_.group_id,
                    static_cast<unsigned long long>(e.index), s.ToString().c_str());
         std::lock_guard<std::mutex> lock(apply_mutex_);
@@ -336,7 +410,7 @@ void RaftGroup::ApplyLoop() {
         it->second->done = true;
         it->second->result =
             it->second->term == e.term
-                ? Status::OK()
+                ? logical
                 : Status::NotLeader("superseded by another leader");
         proposals_.erase(it);
         raft_cv_.notify_all();
@@ -362,15 +436,11 @@ std::string RaftGroup::SerializeStateMachine() {
 
   std::string body;
   uint32_t count = 0;
-  auto it = db_->NewIterator();
-  for (it->Seek(range.start); it->Valid(); it->Next()) {
-    std::string_view key = it->key();
-    if (IsSystemKey(key)) continue;
-    if (!range.end.empty() && key >= range.end) break;
+  ForEachOwnedPair(db_, range, [&](std::string_view key, std::string_view value) {
     PutLengthPrefixed(&body, key);
-    PutLengthPrefixed(&body, it->value());
+    PutLengthPrefixed(&body, value);
     count++;
-  }
+  });
   PutFixed32(&out, count);
   out += body;
   return out;
@@ -393,17 +463,12 @@ void RaftGroup::ApplySnapshot(const Snapshot& snap) {
   }
   uint32_t count = dec.U32();
 
-  // Wipe exactly the snapshot's range, then insert its contents.
+  // Wipe exactly the snapshot's range (raw + txn records), then insert its
+  // contents verbatim.
   std::vector<std::string> to_delete;
-  {
-    auto it = db_->NewIterator();
-    for (it->Seek(range.start); it->Valid(); it->Next()) {
-      std::string_view key = it->key();
-      if (IsSystemKey(key)) continue;
-      if (!range.end.empty() && key >= range.end) break;
-      to_delete.emplace_back(key);
-    }
-  }
+  ForEachOwnedPair(db_, range, [&](std::string_view key, std::string_view) {
+    to_delete.emplace_back(key);
+  });
   Status s = Status::OK();
   for (const auto& key : to_delete) {
     s = db_->Delete(key);
@@ -459,7 +524,7 @@ void RaftGroup::MaybeSnapshot() {
             static_cast<unsigned long long>(applied));
 }
 
-Status RaftGroup::ProposeAndWait(const std::string& command) {
+Status RaftGroup::ProposeAndWait(const std::string& command, uint64_t* applied_index) {
   std::shared_ptr<PendingProposal> pending;
   {
     std::unique_lock<std::mutex> lock(raft_mutex_);
@@ -468,6 +533,7 @@ Status RaftGroup::ProposeAndWait(const std::string& command) {
     if (!raft_->Propose(command, &index, &term)) {
       return Status::NotLeader("");
     }
+    if (applied_index != nullptr) *applied_index = index;
     pending = std::make_shared<PendingProposal>();
     pending->term = term;
     proposals_[index] = pending;
@@ -493,6 +559,35 @@ Status RaftGroup::Put(std::string_view key, std::string_view value) {
 
 Status RaftGroup::Delete(std::string_view key) {
   return ProposeAndWait(EncodeCommand(2, key, ""));
+}
+
+Status RaftGroup::TsTick(uint64_t* ts) {
+  return ProposeAndWait(EncodeCommand(7, "", ""), ts);
+}
+
+Status RaftGroup::TxnPrewrite(std::string_view key, std::string_view value, uint8_t wop,
+                              uint64_t start_ts, std::string_view primary,
+                              uint64_t wall_ms) {
+  std::string payload;
+  PutFixed8(&payload, wop);
+  PutFixed64(&payload, start_ts);
+  PutFixed64(&payload, wall_ms);
+  PutLengthPrefixed(&payload, primary);
+  PutLengthPrefixed(&payload, value);
+  return ProposeAndWait(EncodeCommand(4, key, payload));
+}
+
+Status RaftGroup::TxnCommit(std::string_view key, uint64_t start_ts, uint64_t commit_ts) {
+  std::string payload;
+  PutFixed64(&payload, start_ts);
+  PutFixed64(&payload, commit_ts);
+  return ProposeAndWait(EncodeCommand(5, key, payload));
+}
+
+Status RaftGroup::TxnRollback(std::string_view key, uint64_t start_ts) {
+  std::string payload;
+  PutFixed64(&payload, start_ts);
+  return ProposeAndWait(EncodeCommand(6, key, payload));
 }
 
 Status RaftGroup::Split(std::string_view key, uint32_t child_id) {
