@@ -35,6 +35,10 @@ std::string EncodeRequest(const Request& req) {
   PutLengthPrefixed(&out, req.end_key);
   PutFixed32(&out, req.limit);
   PutFixed8(&out, req.flags);
+  PutFixed64(&out, req.ts);
+  PutFixed64(&out, req.ts2);
+  PutLengthPrefixed(&out, req.primary);
+  PutFixed8(&out, req.wop);
   return out;
 }
 
@@ -49,6 +53,13 @@ bool DecodeRequest(std::string_view payload, Request* req) {
     case MsgType::kStatus:
     case MsgType::kSplit:
     case MsgType::kRanges:
+    case MsgType::kTxnTs:
+    case MsgType::kTxnGet:
+    case MsgType::kTxnPrewrite:
+    case MsgType::kTxnCommit:
+    case MsgType::kTxnRollback:
+    case MsgType::kTxnScan:
+    case MsgType::kTxnResolve:
       break;
     default:
       return false;
@@ -59,6 +70,10 @@ bool DecodeRequest(std::string_view payload, Request* req) {
   req->end_key = dec.Str();
   req->limit = dec.U32();
   req->flags = dec.U8();
+  req->ts = dec.U64();
+  req->ts2 = dec.U64();
+  req->primary = dec.Str();
+  req->wop = dec.U8();
   return dec.ok() && dec.remaining() == 0;
 }
 
@@ -75,6 +90,10 @@ std::string EncodeResponse(const Response& resp) {
     PutLengthPrefixed(&out, k);
     PutLengthPrefixed(&out, v);
   }
+  PutFixed64(&out, resp.ts);
+  PutFixed64(&out, resp.lock_ts);
+  PutLengthPrefixed(&out, resp.lock_primary);
+  PutLengthPrefixed(&out, resp.lock_key);
   return out;
 }
 
@@ -93,6 +112,10 @@ bool DecodeResponse(std::string_view payload, Response* resp) {
     std::string v = dec.Str();
     resp->kvs.emplace_back(std::move(k), std::move(v));
   }
+  resp->ts = dec.U64();
+  resp->lock_ts = dec.U64();
+  resp->lock_primary = dec.Str();
+  resp->lock_key = dec.Str();
   return dec.ok() && dec.remaining() == 0;
 }
 

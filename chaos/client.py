@@ -28,9 +28,12 @@ def _lp(data: bytes) -> bytes:
 
 
 def encode_request(msg_type: int, key: bytes = b"", value: bytes = b"",
-                   end_key: bytes = b"", limit: int = 0, flags: int = 0) -> bytes:
+                   end_key: bytes = b"", limit: int = 0, flags: int = 0,
+                   ts: int = 0, ts2: int = 0, primary: bytes = b"",
+                   wop: int = 0) -> bytes:
     return (struct.pack("<B", msg_type) + _lp(key) + _lp(value) + _lp(end_key) +
-            struct.pack("<IB", limit, flags))
+            struct.pack("<IB", limit, flags) + struct.pack("<QQ", ts, ts2) +
+            _lp(primary) + struct.pack("<B", wop))
 
 
 class _Reader:
@@ -68,6 +71,10 @@ def decode_response(payload: bytes) -> dict:
     }
     count = r.u32()
     resp["kvs"] = [(r.string(), r.string()) for _ in range(count)]
+    resp["ts"] = struct.unpack("<Q", r.take(8))[0]
+    resp["lock_ts"] = struct.unpack("<Q", r.take(8))[0]
+    resp["lock_primary"] = r.string()
+    resp["lock_key"] = r.string()
     return resp
 
 
