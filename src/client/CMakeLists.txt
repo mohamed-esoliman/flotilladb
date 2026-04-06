@@ -1,5 +1,6 @@
 add_library(flotilla_client
   client.cc
+  txn_client.cc
 )
 target_link_libraries(flotilla_client PUBLIC flotilla_net)
 
