@@ -4,17 +4,36 @@
 
 #include <filesystem>
 
+#include <chrono>
+
 #include "common/coding.h"
 #include "common/logger.h"
 #include "net/frame.h"
 #include "net/socket.h"
 #include "raft/wire.h"
+#include "txn/txn_ops.h"
 
 namespace flotilla::server {
 
 namespace {
 constexpr size_t kMaxOutboxFrames = 4096;
 constexpr uint32_t kDefaultScanLimit = 1000;
+constexpr uint64_t kLockTtlMs = 3000;
+
+uint64_t NowMs() {
+  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::system_clock::now().time_since_epoch())
+                                   .count());
+}
+
+void FillLockInfo(net::Response* resp, const txn::LockRecord& lock,
+                  const std::string& key) {
+  resp->code = static_cast<uint8_t>(Status::Code::kConflict);
+  resp->message = "blocked by lock";
+  resp->lock_ts = lock.start_ts;
+  resp->lock_primary = lock.primary;
+  resp->lock_key = key;
+}
 }  // namespace
 
 Status ShardedNode::Start(const NodeOptions& options, std::unique_ptr<ShardedNode>* out) {
@@ -350,11 +369,59 @@ net::Response ShardedNode::ScanAcrossRanges(const net::Request& req) {
       while (it->Valid() && resp.kvs.size() < limit) {
         std::string_view key = it->key();
         if (!sub_end.empty() && key >= sub_end) break;
-        if (!IsSystemKey(key)) {
+        if (!IsReservedKey(key)) {
           resp.kvs.emplace_back(std::string(key), std::string(it->value()));
         }
         it->Next();
       }
+      continue;
+    }
+
+    if (req.flags & net::kRequestNoForward) return NotLeaderResponse(group.get());
+    const NodeInfo* info = options_.cluster.Find(group->LeaderId());
+    if (info == nullptr) return NotLeaderResponse(group.get());
+    net::Request sub = req;
+    sub.key = sub_start;
+    sub.end_key = sub_end;
+    sub.limit = limit - static_cast<uint32_t>(resp.kvs.size());
+    sub.flags |= net::kRequestNoForward;
+    net::Response sub_resp = ForwardScan(info->client_addr, sub);
+    if (!sub_resp.ok()) return sub_resp;
+    for (auto& kv : sub_resp.kvs) resp.kvs.push_back(std::move(kv));
+  }
+  return resp;
+}
+
+net::Response ShardedNode::TxnScanAcrossRanges(const net::Request& req) {
+  uint32_t limit = req.limit == 0 ? kDefaultScanLimit : req.limit;
+  net::Response resp;
+  for (const RangeDesc& range : RangesIntersecting(req.key, req.end_key)) {
+    if (resp.kvs.size() >= limit) break;
+    std::string sub_start = std::max(req.key, range.start);
+    std::string sub_end = range.end;
+    if (!req.end_key.empty() && (sub_end.empty() || req.end_key < sub_end)) {
+      sub_end = req.end_key;
+    }
+    auto group = GroupById(range.id);
+    if (group == nullptr) continue;
+
+    if (group->IsLeader()) {
+      Status s = group->LinearizableReadBarrier();
+      if (s.IsNotLeader()) return NotLeaderResponse(group.get());
+      if (!s.ok()) return net::Response::FromStatus(s);
+      std::vector<std::pair<std::string, std::string>> rows;
+      bool blocked = false;
+      txn::LockRecord lock;
+      std::string blocking_key;
+      s = txn::TxnScan(db_.get(), sub_start, sub_end, req.ts,
+                       limit - static_cast<uint32_t>(resp.kvs.size()), &rows, &blocked,
+                       &lock, &blocking_key);
+      if (!s.ok()) return net::Response::FromStatus(s);
+      if (blocked) {
+        FillLockInfo(&resp, lock, blocking_key);
+        return resp;
+      }
+      for (auto& row : rows) resp.kvs.push_back(std::move(row));
       continue;
     }
 
@@ -397,6 +464,10 @@ net::Response ShardedNode::Handle(const net::Request& req) {
     }
     case MsgType::kPut:
     case MsgType::kDelete: {
+      if (IsReservedKey(req.key)) {
+        return net::Response::FromStatus(Status::InvalidArgument(
+            "keys beginning with 0x00 or '!' are reserved"));
+      }
       auto group = RouteToGroup(req.key);
       if (group == nullptr) {
         return net::Response::FromStatus(Status::IOError("no range for key"));
@@ -409,6 +480,125 @@ net::Response ShardedNode::Handle(const net::Request& req) {
     }
     case MsgType::kScan:
       return ScanAcrossRanges(req);
+    case MsgType::kTxnTs: {
+      auto group = RouteToGroup("");
+      if (group == nullptr) {
+        return net::Response::FromStatus(Status::IOError("no timestamp range"));
+      }
+      uint64_t ts = 0;
+      Status s = group->TsTick(&ts);
+      if (s.IsNotLeader()) return NotLeaderResponse(group.get());
+      if (!s.ok()) return net::Response::FromStatus(s);
+      resp.ts = ts;
+      break;
+    }
+    case MsgType::kTxnGet: {
+      auto group = RouteToGroup(req.key);
+      if (group == nullptr) {
+        return net::Response::FromStatus(Status::IOError("no range for key"));
+      }
+      Status s = group->LinearizableReadBarrier();
+      if (s.IsNotLeader()) return NotLeaderResponse(group.get());
+      if (!s.ok()) return net::Response::FromStatus(s);
+      txn::TxnReadResult result;
+      s = txn::TxnGet(db_.get(), req.key, req.ts, &result);
+      if (!s.ok()) return net::Response::FromStatus(s);
+      if (result.locked) {
+        FillLockInfo(&resp, result.lock, req.key);
+        break;
+      }
+      resp.found = result.found;
+      resp.value = std::move(result.value);
+      break;
+    }
+    case MsgType::kTxnPrewrite: {
+      auto group = RouteToGroup(req.key);
+      if (group == nullptr) {
+        return net::Response::FromStatus(Status::IOError("no range for key"));
+      }
+      Status s = group->TxnPrewrite(req.key, req.value, req.wop, req.ts, req.primary,
+                                    req.ts2 != 0 ? req.ts2 : NowMs());
+      if (s.IsNotLeader()) return NotLeaderResponse(group.get());
+      if (s.IsConflict()) {
+        // Attach the blocking lock so the client can drive resolution.
+        resp = net::Response::FromStatus(s);
+        bool has_lock = false;
+        txn::LockRecord lock;
+        if (txn::GetLock(db_.get(), req.key, &has_lock, &lock).ok() && has_lock) {
+          resp.lock_ts = lock.start_ts;
+          resp.lock_primary = lock.primary;
+          resp.lock_key = req.key;
+        }
+        return resp;
+      }
+      if (!s.ok()) return net::Response::FromStatus(s);
+      break;
+    }
+    case MsgType::kTxnCommit: {
+      auto group = RouteToGroup(req.key);
+      if (group == nullptr) {
+        return net::Response::FromStatus(Status::IOError("no range for key"));
+      }
+      Status s = group->TxnCommit(req.key, req.ts, req.ts2);
+      if (s.IsNotLeader()) return NotLeaderResponse(group.get());
+      if (!s.ok()) return net::Response::FromStatus(s);
+      break;
+    }
+    case MsgType::kTxnRollback: {
+      auto group = RouteToGroup(req.key);
+      if (group == nullptr) {
+        return net::Response::FromStatus(Status::IOError("no range for key"));
+      }
+      Status s = group->TxnRollback(req.key, req.ts);
+      if (s.IsNotLeader()) return NotLeaderResponse(group.get());
+      if (!s.ok()) return net::Response::FromStatus(s);
+      break;
+    }
+    case MsgType::kTxnScan:
+      return TxnScanAcrossRanges(req);
+    case MsgType::kTxnResolve: {
+      auto group = RouteToGroup(req.key);
+      if (group == nullptr) {
+        return net::Response::FromStatus(Status::IOError("no range for key"));
+      }
+      Status s = group->LinearizableReadBarrier();
+      if (s.IsNotLeader()) return NotLeaderResponse(group.get());
+      if (!s.ok()) return net::Response::FromStatus(s);
+
+      bool has_lock = false;
+      txn::LockRecord lock;
+      s = txn::GetLock(db_.get(), req.key, &has_lock, &lock);
+      if (!s.ok()) return net::Response::FromStatus(s);
+      if (has_lock && lock.start_ts == req.ts) {
+        if (NowMs() < lock.wall_ms + kLockTtlMs) {
+          return net::Response::FromStatus(
+              Status::Conflict("transaction still alive"));
+        }
+        // Expired: roll the primary back; the wall-clock decision happens
+        // here at propose time, the rollback itself is deterministic.
+        s = group->TxnRollback(req.key, req.ts);
+        if (s.IsNotLeader()) return NotLeaderResponse(group.get());
+        if (!s.ok() && !s.IsConflict()) return net::Response::FromStatus(s);
+        // A Conflict here means it actually committed under us; fall through.
+      }
+      uint64_t commit_ts = 0;
+      bool rolled_back = false;
+      s = txn::FindTxnOutcome(db_.get(), req.key, req.ts, &commit_ts, &rolled_back);
+      if (!s.ok()) return net::Response::FromStatus(s);
+      if (commit_ts == 0 && !rolled_back) {
+        // Neither committed nor marked: poison the timestamp.
+        s = group->TxnRollback(req.key, req.ts);
+        if (s.IsNotLeader()) return NotLeaderResponse(group.get());
+        if (s.IsConflict()) {
+          s = txn::FindTxnOutcome(db_.get(), req.key, req.ts, &commit_ts, &rolled_back);
+          if (!s.ok()) return net::Response::FromStatus(s);
+        } else if (!s.ok()) {
+          return net::Response::FromStatus(s);
+        }
+      }
+      resp.ts = commit_ts;  // 0 = rolled back
+      break;
+    }
     case MsgType::kSplit: {
       auto group = RouteToGroup(req.key);
       if (group == nullptr) {

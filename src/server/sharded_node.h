@@ -68,6 +68,7 @@ class ShardedNode : public GroupHost {
   uint32_t AllocateRangeId();
   net::Response NotLeaderResponse(RaftGroup* group);
   net::Response ScanAcrossRanges(const net::Request& req);
+  net::Response TxnScanAcrossRanges(const net::Request& req);
   net::Response ForwardScan(const std::string& addr, const net::Request& req);
 
   void TickLoop();
