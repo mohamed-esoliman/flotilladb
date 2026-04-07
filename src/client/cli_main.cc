@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "client/client.h"
+#include "client/txn_client.h"
 
 namespace {
 
@@ -56,6 +57,130 @@ void PrintTable(const std::vector<std::pair<std::string, std::string>>& rows,
   }
 }
 
+// Executes one statement inside a transaction. Returns false on unknown.
+bool RunTxnStatement(flotilla::client::Txn& txn,
+                     const std::vector<std::string>& tokens) {
+  const std::string& cmd = tokens[0];
+  if (cmd == "get" && tokens.size() == 2) {
+    std::string value;
+    Status s = txn.Get(tokens[1], &value);
+    if (s.IsNotFound()) {
+      printf("(not found)\n");
+    } else if (!s.ok()) {
+      printf("(error) %s\n", s.ToString().c_str());
+    } else {
+      printf("%s\n", value.c_str());
+    }
+  } else if ((cmd == "set" || cmd == "put") && tokens.size() == 3) {
+    txn.Put(tokens[1], tokens[2]);
+    printf("buffered\n");
+  } else if (cmd == "del" && tokens.size() == 2) {
+    txn.Delete(tokens[1]);
+    printf("buffered\n");
+  } else if (cmd == "scan" && tokens.size() <= 4) {
+    std::string start = tokens.size() > 1 ? tokens[1] : "";
+    std::string end = tokens.size() > 2 ? tokens[2] : "";
+    uint32_t limit = tokens.size() > 3
+                         ? static_cast<uint32_t>(atoi(tokens[3].c_str()))
+                         : 1000;
+    std::vector<std::pair<std::string, std::string>> rows;
+    Status s = txn.Scan(start, end, limit, &rows);
+    if (!s.ok()) {
+      printf("(error) %s\n", s.ToString().c_str());
+    } else if (rows.empty()) {
+      printf("(empty)\n");
+    } else {
+      PrintTable(rows, "key", "value");
+    }
+  } else {
+    return false;
+  }
+  return true;
+}
+
+// Splits tokens on ";" separators into statements.
+std::vector<std::vector<std::string>> SplitStatements(
+    const std::vector<std::string>& tokens, size_t from) {
+  std::vector<std::vector<std::string>> statements(1);
+  for (size_t i = from; i < tokens.size(); i++) {
+    std::string token = tokens[i];
+    while (!token.empty() && token.back() == ';') {
+      token.pop_back();
+      if (!token.empty()) statements.back().push_back(token);
+      statements.emplace_back();
+      token.clear();
+    }
+    if (!token.empty()) statements.back().push_back(token);
+  }
+  while (!statements.empty() && statements.back().empty()) statements.pop_back();
+  return statements;
+}
+
+int RunOneShotTxn(Client& client, const std::vector<std::string>& tokens) {
+  flotilla::client::Txn txn(&client);
+  Status s = txn.Begin();
+  if (!s.ok()) {
+    printf("(error) begin: %s\n", s.ToString().c_str());
+    return 1;
+  }
+  for (const auto& statement : SplitStatements(tokens, 1)) {
+    if (statement.empty()) continue;
+    if (!RunTxnStatement(txn, statement)) {
+      printf("unknown txn statement: %s\n", statement[0].c_str());
+      txn.Rollback();
+      return 1;
+    }
+  }
+  s = txn.Commit();
+  if (!s.ok()) {
+    printf("(error) commit: %s\n", s.ToString().c_str());
+    return 1;
+  }
+  printf("COMMITTED (start_ts %llu)\n",
+         static_cast<unsigned long long>(txn.start_ts()));
+  return 0;
+}
+
+int RunInteractiveTxn(Client& client) {
+  flotilla::client::Txn txn(&client);
+  Status s = txn.Begin();
+  if (!s.ok()) {
+    printf("(error) begin: %s\n", s.ToString().c_str());
+    return 1;
+  }
+  printf("transaction started at ts %llu (commit / abort to finish)\n",
+         static_cast<unsigned long long>(txn.start_ts()));
+  std::string line;
+  while (true) {
+    printf("txn> ");
+    fflush(stdout);
+    if (!std::getline(std::cin, line)) {
+      txn.Rollback();
+      printf("(aborted)\n");
+      return 0;
+    }
+    auto tokens = Tokenize(line);
+    if (tokens.empty()) continue;
+    if (tokens[0] == "commit") {
+      s = txn.Commit();
+      if (!s.ok()) {
+        printf("(error) commit: %s\n", s.ToString().c_str());
+        return 1;
+      }
+      printf("COMMITTED\n");
+      return 0;
+    }
+    if (tokens[0] == "abort" || tokens[0] == "rollback") {
+      txn.Rollback();
+      printf("(aborted)\n");
+      return 0;
+    }
+    if (!RunTxnStatement(txn, tokens)) {
+      printf("txn commands: get set del scan commit abort\n");
+    }
+  }
+}
+
 void Help() {
   printf(
       "commands:\n"
@@ -66,6 +191,9 @@ void Help() {
       "  status                     node status\n"
       "  split <key>                split the range containing key at key\n"
       "  ranges                     list range descriptors\n"
+      "  txn                        interactive transaction (get/set/del/scan,\n"
+      "                             commit, abort); snapshot isolation\n"
+      "  txn <stmt>; <stmt>; ...    one-shot transaction, auto-committed\n"
       "  help                       this help\n"
       "  quit                       exit\n"
       "quote values containing spaces: put greeting \"hello world\"\n");
@@ -124,6 +252,9 @@ int RunCommand(Client& client, const std::vector<std::string>& tokens) {
     Status s = client.Ranges(&ranges);
     if (!s.ok()) return report(s);
     PrintTable(ranges, "range", "bounds");
+  } else if (cmd == "txn") {
+    return tokens.size() == 1 ? RunInteractiveTxn(client)
+                              : RunOneShotTxn(client, tokens);
   } else if (cmd == "help") {
     Help();
   } else {
