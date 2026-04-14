@@ -77,11 +77,11 @@ first, then real TCP.
 
 ## Milestone 7 — MVCC transactions
 
-- [ ] docs/mvcc.md design doc
-- [ ] versioned keys (user_key + inverted commit_ts), reads at snapshot ts
-- [ ] timestamp allocation via meta group leader
-- [ ] percolator-style 2PC: prewrite locks, primary commit, snapshot isolation
-- [ ] tests: conflict aborts, snapshot reads, cross-shard commit atomicity
+- [x] docs/mvcc.md design doc
+- [x] versioned keys (user_key + inverted commit_ts), reads at snapshot ts
+- [x] timestamp allocation via meta group leader
+- [x] percolator-style 2PC: prewrite locks, primary commit, snapshot isolation
+- [x] tests: conflict aborts, snapshot reads, cross-shard commit atomicity
 
 ## Milestone 8 — SQL subset
 
