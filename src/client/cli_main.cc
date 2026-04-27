@@ -10,6 +10,7 @@
 
 #include "client/client.h"
 #include "client/txn_client.h"
+#include "sql/executor.h"
 
 namespace {
 
@@ -54,6 +55,68 @@ void PrintTable(const std::vector<std::pair<std::string, std::string>>& rows,
   putchar('\n');
   for (const auto& [k, v] : rows) {
     printf("%-*s  %s\n", static_cast<int>(width), k.c_str(), v.c_str());
+  }
+}
+
+void PrintResultSet(const flotilla::sql::ResultSet& result) {
+  if (!result.columns.empty()) {
+    std::vector<size_t> widths;
+    for (const auto& col : result.columns) widths.push_back(col.size());
+    for (const auto& row : result.rows) {
+      for (size_t i = 0; i < row.size(); i++) {
+        widths[i] = std::max(widths[i], row[i].size());
+      }
+    }
+    for (size_t i = 0; i < result.columns.size(); i++) {
+      printf("%-*s  ", static_cast<int>(widths[i]), result.columns[i].c_str());
+    }
+    putchar('\n');
+    for (size_t i = 0; i < result.columns.size(); i++) {
+      for (size_t j = 0; j < widths[i]; j++) putchar('-');
+      printf("  ");
+    }
+    putchar('\n');
+    for (const auto& row : result.rows) {
+      for (size_t i = 0; i < row.size(); i++) {
+        printf("%-*s  ", static_cast<int>(widths[i]), row[i].c_str());
+      }
+      putchar('\n');
+    }
+    printf("(%zu rows)\n", result.rows.size());
+    return;
+  }
+  if (!result.message.empty()) {
+    printf("%s\n", result.message.c_str());
+  } else {
+    printf("OK (%zu rows affected)\n", result.affected);
+  }
+}
+
+int RunSqlStatement(Client& client, const std::string& statement) {
+  flotilla::sql::ResultSet result;
+  Status s = flotilla::sql::Execute(&client, statement, &result);
+  if (!s.ok()) {
+    printf("(error) %s\n", s.ToString().c_str());
+    return 1;
+  }
+  PrintResultSet(result);
+  return 0;
+}
+
+int RunInteractiveSql(Client& client) {
+  printf("sql mode; end with 'exit'\n");
+  std::string line;
+  while (true) {
+    printf("sql> ");
+    fflush(stdout);
+    if (!std::getline(std::cin, line)) return 0;
+    std::string trimmed;
+    for (char c : line) {
+      if (!trimmed.empty() || !isspace(static_cast<unsigned char>(c))) trimmed += c;
+    }
+    if (trimmed.empty()) continue;
+    if (trimmed == "exit" || trimmed == "quit") return 0;
+    RunSqlStatement(client, trimmed);
   }
 }
 
@@ -199,9 +262,20 @@ void Help() {
       "quote values containing spaces: put greeting \"hello world\"\n");
 }
 
+// Text after the first word, for commands that take a raw statement.
+std::string RestOfLine(const std::string& line) {
+  size_t i = 0;
+  while (i < line.size() && isspace(static_cast<unsigned char>(line[i]))) i++;
+  while (i < line.size() && !isspace(static_cast<unsigned char>(line[i]))) i++;
+  while (i < line.size() && isspace(static_cast<unsigned char>(line[i]))) i++;
+  return line.substr(i);
+}
+
 // Returns 0 ok, 1 error, 2 unknown command.
-int RunCommand(Client& client, const std::vector<std::string>& tokens) {
+int RunCommand(Client& client, const std::vector<std::string>& tokens,
+               const std::string& raw_line) {
   const std::string& cmd = tokens[0];
+  std::string raw_args = RestOfLine(raw_line);
   auto report = [](const Status& s) {
     printf("(error) %s\n", s.ToString().c_str());
     return 1;
@@ -255,6 +329,9 @@ int RunCommand(Client& client, const std::vector<std::string>& tokens) {
   } else if (cmd == "txn") {
     return tokens.size() == 1 ? RunInteractiveTxn(client)
                               : RunOneShotTxn(client, tokens);
+  } else if (cmd == "sql") {
+    if (tokens.size() == 1) return RunInteractiveSql(client);
+    return RunSqlStatement(client, raw_args);
   } else if (cmd == "help") {
     Help();
   } else {
@@ -298,7 +375,7 @@ int main(int argc, char** argv) {
   if (!exec.empty()) {
     auto tokens = Tokenize(exec);
     if (tokens.empty()) return 2;
-    int rc = RunCommand(client, tokens);
+    int rc = RunCommand(client, tokens, exec);
     if (rc == 2) {
       fprintf(stderr, "unknown command: %s\n", tokens[0].c_str());
       return 2;
@@ -318,7 +395,7 @@ int main(int argc, char** argv) {
     auto tokens = Tokenize(line);
     if (tokens.empty()) continue;
     if (tokens[0] == "quit" || tokens[0] == "exit") break;
-    if (RunCommand(client, tokens) == 2) {
+    if (RunCommand(client, tokens, line) == 2) {
       printf("unknown command (try help)\n");
     }
   }
