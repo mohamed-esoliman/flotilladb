@@ -16,6 +16,8 @@ flotilla_test(cluster_test flotilla_server flotilla_client)
 flotilla_test(shard_test flotilla_server flotilla_client)
 flotilla_test(txn_test flotilla_txn)
 flotilla_test(txn_cluster_test flotilla_server flotilla_client)
+flotilla_test(sql_test flotilla_sql)
+flotilla_test(sql_cluster_test flotilla_server flotilla_sql)
 
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_FOUND)
