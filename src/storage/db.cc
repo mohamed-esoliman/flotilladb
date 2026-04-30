@@ -453,7 +453,13 @@ Status DB::BuildTableFromIterator(InternalIterator* iter, int output_level,
     if (has_last && e.key == last_key) continue;
     last_key = e.key;
     has_last = true;
-    if (e.op == kDelete && !KeyMayExistBelow(base, output_level, e.key)) continue;
+    // Tombstones may only be dropped by compactions (output level >= 1):
+    // KeyMayExistBelow checks levels strictly below the output, so during a
+    // flush to L0 it cannot see older versions sitting in sibling L0 files.
+    if (e.op == kDelete && output_level > 0 &&
+        !KeyMayExistBelow(base, output_level, e.key)) {
+      continue;
+    }
 
     if (builder == nullptr) {
       {
