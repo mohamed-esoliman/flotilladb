@@ -85,13 +85,13 @@ first, then real TCP.
 
 ## Milestone 8 — SQL subset
 
-- [ ] docs/sql.md design doc
-- [ ] lexer + recursive-descent parser: CREATE TABLE, INSERT, SELECT ... WHERE,
+- [x] docs/sql.md design doc
+- [x] lexer + recursive-descent parser: CREATE TABLE, INSERT, SELECT ... WHERE,
       UPDATE, DELETE
-- [ ] catalog in system keys; row/index encoding onto KV
-- [ ] planner/executor: PK point lookup or filtered scan, via MVCC transactions
-- [ ] flotilla-cli SQL mode
-- [ ] tests: parser, end-to-end SQL over a live cluster
+- [x] catalog in system keys; row/index encoding onto KV
+- [x] planner/executor: PK point lookup or filtered scan, via MVCC transactions
+- [x] flotilla-cli SQL mode
+- [x] tests: parser, end-to-end SQL over a live cluster
 
 ## Final phases
 
