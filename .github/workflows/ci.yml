@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            cc: clang
+            cxx: clang++
+          - os: ubuntu-latest
+            cc: gcc
+            cxx: g++
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+      - name: Build
+        run: cmake --build build -j 4
+      - name: Unit and cluster tests
+        run: ctest --test-dir build --output-on-failure
+      - name: Chaos smoke run
+        run: python3 chaos/run.py --seed 1 --nodes 3 --duration 20 --splits k3 --snapshot-interval 300
