@@ -95,6 +95,6 @@ first, then real TCP.
 
 ## Final phases
 
-- [ ] end-to-end verification: full suite, live 3-node demo, chaos run
-- [ ] README: architecture diagrams, recorded chaos run, verified setup steps
-- [ ] CI workflow (clang/macOS + gcc/Linux)
+- [x] end-to-end verification: full suite, live 3-node demo, chaos run
+- [x] README: architecture diagrams, recorded chaos run, verified setup steps
+- [x] CI workflow (clang/macOS + gcc/Linux)

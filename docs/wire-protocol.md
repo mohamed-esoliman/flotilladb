@@ -16,24 +16,40 @@ thread-per-connection on the server, synchronous request/response in clients.
 
 ## Message types
 
-    1  GET      { key }
-    2  PUT      { key, value }
-    3  DELETE   { key }
-    4  SCAN     { start_key, end_key, u32 limit }   end_key "" = unbounded,
-                                                    end is exclusive, limit 0 = server default
-    5  STATUS   { }
-    16 RESPONSE { u8 code, leader_addr, message, u8 found, value,
-                  u32 count, count * (key, value) }
-    32 RAFT     { raft message body }                (milestone 3, node-to-node)
+    1  GET           { key }
+    2  PUT           { key, value }
+    3  DELETE        { key }
+    4  SCAN          { start_key, end_key, u32 limit }   end_key "" = unbounded,
+                                                         end exclusive, limit 0 = default
+    5  STATUS        { }
+    6  SPLIT         { key }                             (milestone 6, admin)
+    7  RANGES        { }                                 (milestone 6)
+    8  TXN_TS        { }                                 (milestone 7)
+    9  TXN_GET       { key, ts }
+    10 TXN_PREWRITE  { key, value, ts=start_ts, ts2=wall_ms, primary, wop }
+    11 TXN_COMMIT    { key, ts=start_ts, ts2=commit_ts }
+    12 TXN_ROLLBACK  { key, ts=start_ts }
+    13 TXN_SCAN      { start_key, end_key, limit, ts }
+    14 TXN_RESOLVE   { key=primary, ts=start_ts }
+    16 RESPONSE      { u8 code, leader_addr, message, u8 found, value,
+                       u32 count, count * (key, value),
+                       u64 ts, u64 lock_ts, lock_primary, lock_key }
+    32 RAFT          { u32 group_id, raft message body } (node-to-node, one-way)
 
+Every request shares one body layout: `key, value, end_key, u32 limit,
+u8 flags, u64 ts, u64 ts2, primary, u8 wop` — unused fields are zero/empty.
+Flag bit 0 marks a single-range sub-scan that must not be re-forwarded.
 Strings are `[u32 len][bytes]`. RESPONSE is shared by every request type:
 
 - `code` 0 is success; other values mirror `Status::Code` (not found = 1,
   not leader = 5, ...).
 - `leader_addr` (host:port, client-facing) accompanies a NOT_LEADER code so the
   client can redirect. Empty when unknown (e.g. mid-election).
-- GET uses `found`/`value`; SCAN and STATUS use the `(key, value)` list
-  (STATUS reports info fields as string pairs).
+- GET uses `found`/`value`; SCAN, RANGES, and STATUS use the `(key, value)`
+  list (STATUS reports info fields as string pairs).
+- `ts` returns allocated timestamps (TXN_TS) and resolution outcomes
+  (TXN_RESOLVE: the commit_ts, 0 = rolled back); `lock_*` describe the
+  blocking lock alongside a conflict code so clients can resolve it.
 
 Unknown request types get a RESPONSE with an invalid-argument code, keeping the
 connection usable; a malformed frame body closes the connection.
