@@ -78,6 +78,27 @@ TEST(Db, SurvivesFlushesAndCompactions) {
   EXPECT_GT(total_files, 0u);
 }
 
+TEST(Db, TombstoneSurvivesFlushWithOlderVersionInL0) {
+  // Regression: a tombstone flushed to L0 must not be dropped while an older
+  // version of the key still sits in a sibling L0 file.
+  test::TempDir dir("db_tombstone_l0");
+  Options opts = SmallOptions();
+  opts.l0_compaction_trigger = 100;  // keep everything in L0
+  std::unique_ptr<DB> db;
+  ASSERT_TRUE(DB::Open(opts, dir.path(), &db).ok());
+
+  ASSERT_TRUE(db->Put("k", "v").ok());
+  ASSERT_TRUE(db->Flush().ok());  // L0 file with the put
+  ASSERT_TRUE(db->Delete("k").ok());
+  ASSERT_TRUE(db->Flush().ok());  // L0 file with the tombstone
+
+  std::string v;
+  EXPECT_TRUE(db->Get("k", &v).IsNotFound());
+  auto it = db->NewIterator();
+  it->Seek("k");
+  EXPECT_TRUE(!it->Valid() || it->key() != "k");
+}
+
 TEST(Db, ScanSeesNewestAndSkipsTombstones) {
   test::TempDir dir("db_scan");
   std::unique_ptr<DB> db;
