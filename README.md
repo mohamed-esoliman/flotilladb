@@ -64,7 +64,6 @@ $ python3 chaos/run.py --seed 42 --nodes 3 --duration 60 --splits k3,k6
 That transcript is a real recorded run: two live range splits, three leader
 kills, four network partitions, and injected latency over sixty seconds, with
 every one of the 4031 acknowledged operations proven linearizable afterwards.
-```
 
 ## Features
 
