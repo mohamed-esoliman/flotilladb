@@ -85,6 +85,12 @@ Status Client::Call(const Request& req, Response* resp) {
         ::usleep(50 * 1000);
         continue;
       }
+      if (resp->code == static_cast<uint8_t>(Status::Code::kTimeout)) {
+        // The server gave up waiting (slow apply, election in progress); the
+        // op may still land, but every request here is idempotent, so retry.
+        ::usleep(200 * 1000);
+        continue;
+      }
       return Status::OK();
     }
     ::usleep(50 * 1000);
